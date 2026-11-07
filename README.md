@@ -119,6 +119,27 @@ Update with `git pull --ff-only` followed by `sh scripts/build.sh compose up -d 
 - Send photos, documents, voice messages, or videos: Save the files as attachments in a memo.
 - `/search <words>`: Search for the memos.
 - `/space`: Choose a default space for new memos, or "No space" to keep them private. Requires Memos 0.31 or later.
+- Reply to a saved memo: Update that memo's content with the reply, so memos can be corrected from Telegram.
+- Reply to a saved memo with `/delete`: Delete that memo.
+- Press `Delete` under a saved memo: Delete it after a confirmation, because a deletion cannot be undone.
+- Send a Markdown file: Save its text as the memo content, so the file renders as a memo instead of only being attached.
+
+### Markdown from Telegram
+
+Telegram formatting is converted to Markdown before the memo is saved, so a
+memo renders in Memos the way it looked in Telegram:
+
+- Bold, italic and strikethrough become `**bold**`, `*italic*` and `~~struck~~`.
+- Inline code becomes a code span; a code block becomes a fenced block tagged
+  with the language Telegram reports, such as `go` or `sh`.
+- Quotes get a `>` prefix on every line, and links, text links and user mentions
+  become Markdown links.
+- Underline and spoiler stay plain text, because Markdown has no equivalent.
+
+Markdown typed by hand into Telegram is saved unchanged, so fences, tables,
+math and `#tags` can be written directly. Editing works the same way: reply to
+the bot's message that carries the memo link and only the content is replaced,
+leaving visibility, pinning and space alone.
 
 Each saved memo gets buttons to make it public or private, to pin it, and, on Memos 0.31 or later, to move it into one of your spaces. A memo placed in a space gets `SPACE` visibility, so that the space's members can see it. "No space" takes it out again and makes a `SPACE` memo private.
 

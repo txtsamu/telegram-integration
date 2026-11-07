@@ -72,6 +72,7 @@ const (
 	commandStart  = "start"
 	commandSearch = "search"
 	commandSpace  = "space"
+	commandList   = "list"
 )
 
 // New creates the Telegram client and registers Memogram's handlers. Unless
@@ -114,6 +115,7 @@ func New(opts Options) (*Service, error) {
 	s.bot = b
 	b.RegisterHandlerMatchFunc(isCommand(commandStart), s.handleStart)
 	b.RegisterHandlerMatchFunc(isCommand(commandSearch), s.handleSearch)
+	b.RegisterHandlerMatchFunc(isCommand(commandList), s.handleList)
 	b.RegisterHandlerMatchFunc(isCommand(commandSpace), s.handleSpace)
 	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "", bot.MatchTypePrefix, s.handleCallback)
 	return s, nil
@@ -142,6 +144,7 @@ func (s *Service) Start(ctx context.Context) {
 	commands := []models.BotCommand{
 		{Command: commandStart, Description: "Start the bot with access token"},
 		{Command: commandSearch, Description: "Search for the memos"},
+		{Command: commandList, Description: "List recent memos to edit or delete"},
 	}
 	if s.spaces.Load() {
 		commands = append(commands, models.BotCommand{Command: commandSpace, Description: "Choose the default space for new memos"})

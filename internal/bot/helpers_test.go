@@ -41,6 +41,9 @@ type fakeFile struct {
 type fakeTelegram struct {
 	t     *testing.T
 	files map[string]fakeFile
+	// failEdits makes editMessageText fail, as Telegram does for a message it
+	// will not change.
+	failEdits bool
 
 	mu        sync.Mutex
 	calls     []telegramCall
@@ -109,6 +112,10 @@ func (tg *fakeTelegram) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"file_id": id, "file_path": file.path, "file_size": size}})
 	case "sendMessage", "editMessageText", "editMessageReplyMarkup", "answerCallbackQuery":
+		if method == "editMessageText" && tg.failEdits {
+			fmt.Fprint(w, `{"ok":false,"error_code":400,"description":"Bad Request: message can't be edited"}`)
+			return
+		}
 		chatID, _ := strconv.ParseInt(r.FormValue("chat_id"), 10, 64)
 		var keyboard models.InlineKeyboardMarkup
 		if markup := r.FormValue("reply_markup"); markup != "" {

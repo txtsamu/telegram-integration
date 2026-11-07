@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/go-telegram/bot"
@@ -24,6 +25,8 @@ const (
 	actionPin       memoAction = "pin" // toggles
 	actionSpace     memoAction = "space"
 	actionBack      memoAction = "back"
+	actionDelete    memoAction = "delete" // asks for confirmation
+	actionConfirm   memoAction = "del!"   // deletes after confirmation
 
 	// Choices in a space picker, which carry a space key.
 	actionPlace   memoAction = "sp" // puts a memo in a space
@@ -32,7 +35,8 @@ const (
 
 func (a memoAction) valid() bool {
 	switch a {
-	case actionPublic, actionProtected, actionPrivate, actionPin, actionSpace, actionBack, actionPlace, actionDefault:
+	case actionPublic, actionProtected, actionPrivate, actionPin, actionSpace, actionBack,
+		actionDelete, actionConfirm, actionPlace, actionDefault:
 		return true
 	default:
 		return false
@@ -116,10 +120,14 @@ func (s *Service) memoKeyboard(memo *memosapi.Memo) *models.InlineKeyboardMarkup
 		button("Private", actionPrivate),
 		button("Pin", actionPin),
 	}}
+	// Editing happens by replying to this message; Delete asks for a
+	// confirmation first, because it cannot be undone.
+	last := []models.InlineKeyboardButton{}
 	if s.spaces.Load() {
-		rows = append(rows, []models.InlineKeyboardButton{button("Space", actionSpace)})
+		last = append(last, button("Space", actionSpace))
 	}
-	return &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+	last = append(last, button("Delete", actionDelete))
+	return &models.InlineKeyboardMarkup{InlineKeyboard: append(rows, last)}
 }
 
 // handleCallback handles a button press. Memo buttons update the memo, then
@@ -151,7 +159,13 @@ func (s *Service) handleCallback(ctx context.Context, _ *bot.Bot, update *models
 		s.chooseDefaultSpace(ctx, query, client, data.space)
 		return
 	case actionBack:
-		s.restoreKeyboard(ctx, query, data.memo)
+		s.restoreKeyboard(ctx, query, client, data.memo)
+		return
+	case actionDelete:
+		s.openDeleteConfirm(ctx, query, data.memo)
+		return
+	case actionConfirm:
+		s.deleteMemo(ctx, query, client, data.memo)
 		return
 	}
 	memo, err := client.GetMemo(ctx, data.memo)
@@ -171,13 +185,14 @@ func (s *Service) handleCallback(ctx context.Context, _ *bot.Bot, update *models
 			s.alert(ctx, query.ID, "Failed to update memo")
 			return
 		}
-		s.confirmUpdate(ctx, query, memo, "")
+		s.confirmUpdate(ctx, query, memo, "", "updated")
 	}
 }
 
 // confirmUpdate shows a memo's new state in the message whose button was
-// pressed. spaceTitle names the memo's space, when known.
-func (s *Service) confirmUpdate(ctx context.Context, query *models.CallbackQuery, memo *memosapi.Memo, spaceTitle string) {
+// pressed. spaceTitle names the memo's space, when known, and verb describes
+// what happened, such as "updated" or "unchanged".
+func (s *Service) confirmUpdate(ctx context.Context, query *models.CallbackQuery, memo *memosapi.Memo, spaceTitle, verb string) {
 	link, err := s.memoLink(memo)
 	if err != nil {
 		slog.Error("failed to link memo", slog.Any("err", err))
@@ -187,19 +202,22 @@ func (s *Service) confirmUpdate(ctx context.Context, query *models.CallbackQuery
 	// The message is inaccessible when it is too old or was deleted. The
 	// update still succeeded, so only the confirmation is skipped.
 	if msg := query.Message.Message; msg != nil {
-		text := fmt.Sprintf("Memo updated as %s with %s", memoStatus(memo, spaceTitle), link)
+		text := fmt.Sprintf("Memo %s as %s with %s", verb, memoStatus(memo, spaceTitle), link)
 		if memo.Pinned {
 			text += " 📌"
 		}
-		s.edit(ctx, &bot.EditMessageTextParams{
+		if err := s.edit(ctx, &bot.EditMessageTextParams{
 			ChatID:      msg.Chat.ID,
 			MessageID:   msg.ID,
 			Text:        text,
 			ParseMode:   models.ParseModeMarkdown,
 			ReplyMarkup: s.memoKeyboard(memo),
-		})
+		}); err != nil {
+			s.alert(ctx, query.ID, fmt.Sprintf("Memo %s, but the message could not be updated", verb))
+			return
+		}
 	}
-	s.answer(ctx, query.ID, "Memo updated")
+	s.answer(ctx, query.ID, "Memo "+verb)
 }
 
 // openSpacePicker replaces a memo's buttons with the user's spaces.
@@ -254,17 +272,84 @@ func (s *Service) placeMemo(ctx context.Context, query *models.CallbackQuery, cl
 		s.alert(ctx, query.ID, "Failed to update memo")
 		return
 	}
-	s.confirmUpdate(ctx, query, memo, title)
+	s.confirmUpdate(ctx, query, memo, title, "updated")
 }
 
-// restoreKeyboard closes a space picker without changing the memo.
-func (s *Service) restoreKeyboard(ctx context.Context, query *models.CallbackQuery, name string) {
+// openDeleteConfirm replaces a memo's buttons with a confirmation, because a
+// deleted memo cannot be restored from Telegram.
+func (s *Service) openDeleteConfirm(ctx context.Context, query *models.CallbackQuery, name string) {
 	if _, err := memos.MemoUID(name); err != nil {
 		s.alert(ctx, query.ID, "Invalid command")
 		return
 	}
-	if msg := query.Message.Message; msg != nil {
-		s.editMarkup(ctx, msg, s.memoKeyboard(&memosapi.Memo{Name: name}))
+	msg := query.Message.Message
+	if msg == nil {
+		s.alert(ctx, query.ID, "This message can no longer be changed")
+		return
 	}
-	s.answer(ctx, query.ID, "")
+	link, err := s.memoLink(&memosapi.Memo{Name: name})
+	if err != nil {
+		s.alert(ctx, query.ID, "Invalid command")
+		return
+	}
+	if err := s.edit(ctx, &bot.EditMessageTextParams{
+		ChatID:    msg.Chat.ID,
+		MessageID: msg.ID,
+		Text:      escapeMarkdown("Delete ") + link + escapeMarkdown("?\nThis cannot be undone."),
+		ParseMode: models.ParseModeMarkdown,
+		ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{{
+			dataButton("Yes, delete", callbackData{action: actionConfirm, memo: name}),
+			dataButton("Cancel", callbackData{action: actionBack, memo: name}),
+		}}},
+	}); err != nil {
+		s.alert(ctx, query.ID, "Could not show the confirmation, try again")
+		return
+	}
+	s.answer(ctx, query.ID, "Confirm the deletion")
+}
+
+// deleteMemo removes the memo and replaces its message with a confirmation
+// that has no buttons left to press.
+func (s *Service) deleteMemo(ctx context.Context, query *models.CallbackQuery, client *memos.Client, name string) {
+	if err := client.DeleteMemo(ctx, name); err != nil {
+		slog.Error("failed to delete memo", slog.Any("err", err), slog.String("memo", name))
+		var apiErr *memos.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			s.alert(ctx, query.ID, fmt.Sprintf("Memo %s not found", name))
+			return
+		}
+		s.alert(ctx, query.ID, "Failed to delete memo")
+		return
+	}
+	link, err := s.memoLink(&memosapi.Memo{Name: name})
+	if err != nil {
+		slog.Error("failed to link memo", slog.Any("err", err))
+		s.answer(ctx, query.ID, "Memo deleted")
+		return
+	}
+	if msg := query.Message.Message; msg != nil {
+		s.edit(ctx, &bot.EditMessageTextParams{
+			ChatID:      msg.Chat.ID,
+			MessageID:   msg.ID,
+			Text:        fmt.Sprintf("Memo %s deleted", link),
+			ParseMode:   models.ParseModeMarkdown,
+			ReplyMarkup: &models.InlineKeyboardMarkup{InlineKeyboard: [][]models.InlineKeyboardButton{}},
+		})
+	}
+	s.answer(ctx, query.ID, "Memo deleted")
+}
+
+// restoreKeyboard closes a picker or a confirmation without changing the memo,
+// putting the memo's own state and buttons back in the message.
+func (s *Service) restoreKeyboard(ctx context.Context, query *models.CallbackQuery, client *memos.Client, name string) {
+	if _, err := memos.MemoUID(name); err != nil {
+		s.alert(ctx, query.ID, "Invalid command")
+		return
+	}
+	memo, err := client.GetMemo(ctx, name)
+	if err != nil {
+		s.alert(ctx, query.ID, fmt.Sprintf("Memo %s not found", name))
+		return
+	}
+	s.confirmUpdate(ctx, query, memo, "", "unchanged")
 }

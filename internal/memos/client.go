@@ -5,8 +5,10 @@ package memos
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -155,6 +157,35 @@ func (c *Client) UpdateMemo(ctx context.Context, memo *memosapi.Memo, fields ...
 		&memosapi.MemoServiceUpdateMemoParams{UpdateMask: strings.Join(fields, ",")}, body))
 }
 
+// DeleteMemo removes a memo. The OpenAPI document Memogram codes against has
+// no delete operation, so the request is sent directly through the client's
+// HTTP client, which adds the access token and rewrites the path when the
+// legacy /api/v1 API is in use.
+func (c *Client) DeleteMemo(ctx context.Context, name string) error {
+	uid, err := MemoUID(name)
+	if err != nil {
+		return err
+	}
+	endpoint := strings.TrimRight(c.baseURL, "/") + "/api/memos/" + url.PathEscape(uid)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		var status struct {
+			Message string `json:"message"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&status)
+		return &APIError{StatusCode: resp.StatusCode, Message: status.Message}
+	}
+	return nil
+}
+
 func (c *Client) ListMemos(ctx context.Context, filter string) ([]memosapi.Memo, error) {
 	resp, err := DecodeResponse[memosapi.ListMemosResponse](c.api.MemoServiceListMemos(ctx, &memosapi.MemoServiceListMemosParams{PageSize: 10, Filter: filter, State: "NORMAL"}))
 	if err != nil {
@@ -234,6 +265,23 @@ func SearchFilter(text string, user *memosapi.User) string {
 		return filter
 	}
 	return fmt.Sprintf("%s && creator == %q", filter, creator)
+}
+
+// CreatorFilter returns a filter for the memos created by user, which is what
+// a listing of the sender's own memos needs. An empty result would list every
+// visible memo, so callers must handle it instead of sending it.
+func CreatorFilter(user *memosapi.User) string {
+	if user == nil {
+		return ""
+	}
+	creator := user.Name
+	if creator == "" && user.Username != "" {
+		creator = "users/" + user.Username
+	}
+	if creator == "" {
+		return ""
+	}
+	return fmt.Sprintf("creator == %q", creator)
 }
 
 // MemoUID returns the ID segment of a memo resource name, such as "abc" for

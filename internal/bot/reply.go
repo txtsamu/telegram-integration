@@ -14,6 +14,13 @@ import (
 
 const startFirst = "Please start the bot with /start <access_token>"
 
+const (
+	// maxTelegramText is the longest text Telegram accepts in one message.
+	maxTelegramText = 4096
+	// memoPreviewLimit is how much of a memo /list shows above its link.
+	memoPreviewLimit = 80
+)
+
 // The helpers below log Telegram failures, which are otherwise invisible to
 // both the user and the operator.
 
@@ -27,10 +34,16 @@ func (s *Service) send(ctx context.Context, params *bot.SendMessageParams) {
 	}
 }
 
-func (s *Service) edit(ctx context.Context, params *bot.EditMessageTextParams) {
+// edit replaces a message's text and buttons. It returns the error so a caller
+// can tell the user the message could not be changed: a swallowed error made a
+// failed button press look like nothing happened at all.
+func (s *Service) edit(ctx context.Context, params *bot.EditMessageTextParams) error {
 	if _, err := s.bot.EditMessageText(ctx, params); err != nil {
-		slog.Error("failed to edit Telegram message", slog.Any("err", redactTelegramError(err)))
+		err = redactTelegramError(err)
+		slog.Error("failed to edit Telegram message", slog.Any("err", err))
+		return err
 	}
+	return nil
 }
 
 // editMarkup replaces a message's buttons.
@@ -56,12 +69,45 @@ func (s *Service) answerCallback(ctx context.Context, params *bot.AnswerCallback
 	}
 }
 
-// markdownEscaper escapes the characters that Telegram's legacy Markdown
-// treats as formatting, for user-provided text such as space titles.
-var markdownEscaper = strings.NewReplacer("_", `\_`, "*", `\*`, "`", "\\`", "[", `\[`)
+// markdownEscaper escapes every character MarkdownV2 reserves, for any text the
+// bot writes itself or copies from a memo. ParseModeMarkdown is MarkdownV2 in
+// go-telegram/bot, which rejects a message with a single unescaped reserved
+// character, so literal text and separator punctuation must always go through
+// it. Rendered links are built separately and passed unescaped.
+var markdownEscaper = strings.NewReplacer(
+	"\\", `\\`,
+	"_", `\_`,
+	"*", `\*`,
+	"`", "\\`",
+	"[", `\[`,
+	"]", `\]`,
+	"(", `\(`,
+	")", `\)`,
+	"~", `\~`,
+	">", `\>`,
+	"#", `\#`,
+	"+", `\+`,
+	"-", `\-`,
+	"=", `\=`,
+	"|", `\|`,
+	"{", `\{`,
+	"}", `\}`,
+	".", `\.`,
+	"!", `\!`,
+)
 
 func escapeMarkdown(text string) string {
 	return markdownEscaper.Replace(text)
+}
+
+// truncate shortens text to at most limit characters, marking the cut with an
+// ellipsis, which is not a character MarkdownV2 reserves.
+func truncate(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit || limit < 2 {
+		return text
+	}
+	return string(runes[:limit-1]) + "…"
 }
 
 // redactTelegramError drops request URLs, which contain the bot token, from

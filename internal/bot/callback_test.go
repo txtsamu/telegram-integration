@@ -13,7 +13,7 @@ import (
 )
 
 func TestCallbackDataRoundTrip(t *testing.T) {
-	for _, action := range []memoAction{actionPublic, actionProtected, actionPrivate, actionPin} {
+	for _, action := range []memoAction{actionPublic, actionProtected, actionPrivate, actionPin, actionDelete, actionConfirm} {
 		data := callbackData{action: action, memo: "memos/" + strings.Repeat("x", 36)}
 		if len(data.String()) > 64 {
 			t.Fatalf("%s exceeds Telegram's 64 byte callback limit", data)
@@ -28,7 +28,7 @@ func TestCallbackDataRoundTrip(t *testing.T) {
 			t.Errorf("accepted %q", raw)
 		}
 	}
-	if memoAction("delete").valid() {
+	if memoAction("archive").valid() {
 		t.Error("unknown action is valid")
 	}
 }
@@ -37,12 +37,12 @@ func TestKeyboardKeepsLegacyCallbackFormat(t *testing.T) {
 	// Buttons on messages sent by earlier versions must keep working.
 	s := newTestService(t, newFakeTelegram(t, nil), Options{})
 	keyboard := s.memoKeyboard(&memosapi.Memo{Name: "memos/abc"})
-	if want := "Public=public memos/abc,Private=private memos/abc,Pin=pin memos/abc|Space=space memos/abc"; keyboardLayout(keyboard) != want {
+	if want := "Public=public memos/abc,Private=private memos/abc,Pin=pin memos/abc|Space=space memos/abc,Delete=delete memos/abc"; keyboardLayout(keyboard) != want {
 		t.Fatalf("got %s", keyboardLayout(keyboard))
 	}
 	// Servers without spaces get no Space button.
 	s.spaces.Store(false)
-	if want := "Public=public memos/abc,Private=private memos/abc,Pin=pin memos/abc"; keyboardLayout(s.memoKeyboard(&memosapi.Memo{Name: "memos/abc"})) != want {
+	if want := "Public=public memos/abc,Private=private memos/abc,Pin=pin memos/abc|Delete=delete memos/abc"; keyboardLayout(s.memoKeyboard(&memosapi.Memo{Name: "memos/abc"})) != want {
 		t.Fatalf("got %s", keyboardLayout(s.memoKeyboard(&memosapi.Memo{Name: "memos/abc"})))
 	}
 }
@@ -56,7 +56,7 @@ func TestCallback(t *testing.T) {
 		{name: "pin", data: "pin memos/abc", wantAnswer: "Memo updated", edited: true},
 		{name: "inaccessible message", data: "public memos/abc", wantAnswer: "Memo updated", inaccessible: true},
 		{name: "malformed", data: "pin", wantAnswer: "Invalid command", alert: true},
-		{name: "unknown action", data: "delete memos/abc", wantAnswer: "Unknown action", alert: true},
+		{name: "unknown action", data: "archive memos/abc", wantAnswer: "Unknown action", alert: true},
 		{name: "missing memo", data: "pin memos/missing", wantAnswer: "Memo memos/missing not found", alert: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

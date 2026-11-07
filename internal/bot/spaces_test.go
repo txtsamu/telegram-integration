@@ -235,7 +235,9 @@ func TestBackRestoresKeyboard(t *testing.T) {
 	fake := &spaceMemos{spaces: teamSpaces}
 	s, tg, _ := newSpaceService(t, fake)
 	calls := press(s, tg, "back memos/abc")
-	if methods(calls) != "editMessageReplyMarkup,answerCallbackQuery" {
+	// Back now rewrites the text as well, so a cancelled deletion does not leave
+	// the confirmation prompt behind.
+	if methods(calls) != "editMessageText,answerCallbackQuery" || calls[1].text != "Memo unchanged" {
 		t.Fatalf("unexpected calls: %+v", calls)
 	}
 	if want := keyboardLayout(s.memoKeyboard(&memosapi.Memo{Name: "memos/abc"})); keyboardLayout(&calls[0].keyboard) != want {
@@ -406,7 +408,7 @@ func TestUnavailableDefaultSpace(t *testing.T) {
 				t.Fatalf("expected one retry without the space: %+v", fake.created)
 			}
 			if len(calls) != 1 || !strings.HasPrefix(calls[0].text, "Content saved as PRIVATE with [memos/new2]") ||
-				!strings.HasSuffix(calls[0].text, `Your default space Old\_team is no longer available, so this memo was saved without it. Use /space to choose another.`) {
+				!strings.HasSuffix(calls[0].text, `Your default space Old\_team is no longer available, so this memo was saved without it\. Use /space to choose another\.`) {
 				t.Fatalf("unexpected reply: %q", calls[0].text)
 			}
 			if data.DefaultSpace(1) != (store.Space{}) {
